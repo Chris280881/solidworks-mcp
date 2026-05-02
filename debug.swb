@@ -1,0 +1,12 @@
+Sub main()
+    Set swApp = CreateObject("SldWorks.Application.27")
+    swApp.SendMsgToUser "Macro is running!"
+    Set doc = swApp.ActiveDoc
+    If Not doc Is Nothing Then
+        ok = doc.Extension.SelectByID2("Skizze10", "SKETCH", 0, 0, 0, False, 1, Nothing, 0)
+        If ok Then
+             doc.FeatureManager.FeatureCut3 True, False, False, 1, 0, 0.01, 0.01, False, False, False, False, 0, 0, False, False, False, False, 0, 0, True, True, False, False, 0, 0, False
+             swApp.SendMsgToUser "Cut attempted!"
+        End If
+    End If
+End Sub

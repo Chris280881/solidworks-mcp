@@ -8,18 +8,19 @@ Dieser Server ermöglicht es KI-Assistenten (wie Claude oder Gemini), SolidWorks
 
 - **Status & Navigation**: Verbindung prüfen, geöffnete Dokumente listen und aktivieren.
 - **Dateimanagement**: Neue Parts erstellen, Dateien öffnen, speichern und schließen.
-- **Modellierung**: Erstellen von Quader-Primitiven, Skizzen und Features. Optimiert für SolidWorks 2019 (Signatur-Fixes für 20/23 Parameter).
-- **Lokalisierung**: Unterstützt deutsche ("Ebene oben") und englische ("Top Plane") Bezeichnungen.
-- **Daten & Eigenschaften**: Auslesen von Masseneigenschaften, Bemaßungen und benutzerdefinierten Eigenschaften.
-- **Export**: Export in STL, STEP, IGES, DXF, DWG und PDF.
-- **Neu**: `sw_select_feature` zur expliziten Steuerung von Selektionen.
+- **Modellierung**: Vollautomatische Erstellung von Geometrie via Macro-Bridge (VBScript/VBA) für maximale Kompatibilität mit SolidWorks 2019.
+- **Tools**:
+    - `sw_create_box`: Erstellt einen zentrierten Quader.
+    - `sw_drill_hole`: Erstellt zentrierte Bohrungen auf den Hauptachsen (Vorne, Oben, Rechts) inkl. "Through All" Support.
+    - `sw_chamfer_all_edges`: Wendet eine Fase auf alle Kanten des Bauteils an.
+- **Lokalisierung**: Vollständige Unterstützung für deutsche SolidWorks-Installationen (Ebenennamen, Feature-Typen).
 
-## Bekannte Besonderheiten (SW 2019)
+## Technische Details (SW 2019)
 
-Die COM-Schnittstelle von SolidWorks 2019 erfordert exakte Parameteranzahlen:
-- `FeatureExtrusion`: 20 Parameter
-- `FeatureExtrusion2`: 23 Parameter
-Der Server enthält automatische Fallbacks, um diese Stabilität zu gewährleisten.
+Für eine stabile Automatisierung nutzt dieser Server:
+1. **VBScript Bridge**: Komplexe Befehle wie `FeatureExtrusion2` und `FeatureCut3` werden über temporäre VBScripts ausgeführt, um COM-Parameter-Konflikte zu vermeiden.
+2. **Explizite Parameter**: Befehle wie `InsertFeatureChamfer` nutzen die exakt ermittelte Anzahl von 8 Parametern.
+3. **Zentrierung**: Bohrungen werden standardmäßig als Mid-Plane-Cuts ausgeführt, um Symmetrie zu gewährleisten.
 
 ## Voraussetzungen
 

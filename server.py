@@ -339,13 +339,16 @@ def _run_vbs_bridge(script_content: str) -> str:
     import subprocess
     temp_dir = tempfile.gettempdir()
     vbs_path = os.path.join(temp_dir, "sw_bridge.vbs")
-    with open(vbs_path, "w", encoding="latin-1") as f:
+    # VBScript erwartet oft Latin-1/ANSI unter Windows
+    with open(vbs_path, "w", encoding="latin-1", errors="replace") as f:
         f.write(script_content)
     
     try:
+        # Wir lesen den Output mit cp1252 (Windows Standard) und ignorieren Fehler
         result = subprocess.run(["cscript", "//NoLogo", vbs_path], 
-                               capture_output=True, text=True, timeout=10)
-        return result.stdout.strip()
+                               capture_output=True, text=False, timeout=10)
+        stdout = result.stdout.decode("cp1252", errors="replace").strip()
+        return stdout
     except Exception as e:
         return f"Fehler: {str(e)}"
 
@@ -389,6 +392,90 @@ End If
     res = _run_vbs_bridge(vbs)
     if "Success" in res:
         return f"Quader erfolgreich erstellt und gespeichert: {save_path}"
+    return res
+
+
+@mcp.tool()
+def sw_drill_hole(diameter_mm: float, face_name: str = "Vorne") -> str:
+    """Bohrt ein zentriertes Loch durch den Würfel auf der angegebenen Achse.
+    
+    Args:
+        diameter_mm: Durchmesser des Lochs in mm.
+        face_name:   "Vorne", "Oben" oder "Rechts"
+    """
+    # Mapping für die Zentrierung basierend auf einem 50mm Würfel (Zentrum bei 0,0,0)
+    # Wenn der Würfel symmetrisch erstellt wurde (wie in sw_create_box), ist das Zentrum der Faces:
+    # Vorne:  Z = 25mm  (X=0, Y=0)
+    # Oben:   Y = 25mm  (X=0, Z=0)
+    # Rechts: X = 25mm  (Y=0, Z=0)
+    
+    axis_map = {
+        "vorne":  {"type": "PLANE", "name": ["Ebene vorne", "Front Plane", "Vorne"], "idx": 0},
+        "oben":   {"type": "PLANE", "name": ["Ebene oben", "Top Plane", "Oben"], "idx": 1},
+        "rechts": {"type": "PLANE", "name": ["Ebene rechts", "Right Plane", "Rechts"], "idx": 2}
+    }
+    
+    config = axis_map.get(face_name.lower())
+    if not config:
+        return f"Fehler: Unbekannte Achse '{face_name}'."
+
+    vbs = f"""
+Set swApp = GetObject(, "SldWorks.Application.27")
+Set doc = swApp.ActiveDoc
+If doc Is Nothing Then WScript.Quit
+
+doc.ClearSelection2 True
+
+' 1. Ebene/Seite selektieren (Zentrum der Bohrung erzwingen)
+selected = False
+names = Array({", ".join([f'"{n}"' for n in config["name"]])})
+For Each n In names
+    If doc.Extension.SelectByID2(n, "PLANE", 0, 0, 0, False, 0, Nothing, 0) Then
+        selected = True
+        Exit For
+    End If
+Next
+
+' Fallback auf Index
+If Not selected Then
+    count = 0
+    Set feat = doc.FirstFeature
+    Do While Not feat Is Nothing
+        If feat.GetTypeName2 = "RefPlane" Then
+            If count = {config["idx"]} Then
+                feat.Select2 False, 0
+                selected = True
+                Exit Do
+            End If
+            count = count + 1
+        End If
+        Set feat = feat.GetNextFeature
+    Loop
+End If
+
+If Not selected Then
+    WScript.Echo "Fehler: Ebene nicht gefunden."
+    WScript.Quit
+End If
+
+' 2. Skizze im Ursprung der Ebene (das ist die Mitte des Würfels, da wir symmetrisch gezeichnet haben)
+doc.SketchManager.InsertSketch True
+Set seg = doc.SketchManager.CreateCircle(0, 0, 0, {float(diameter_mm)/2000.0}, 0, 0)
+
+' 3. Cut-Extrude (Durch alles in beide Richtungen um sicherzugehen)
+' FeatureCut3(Sd, Flip, Dir, T1, T2, D1, D2, Dchk1, Dchk2, Ddir1, Ddir2, D1r, D2r, D1a, D2a, D1h, D2h, D1o, D2o, SelOnSet, Topo, Tight, Np, Npdir, Npa, Npdist)
+' Wir nutzen T1=1 (Through All) und Dir=True (beide Richtungen)
+Set cut = doc.FeatureManager.FeatureCut3(True, False, True, 1, 1, 0.01, 0.01, False, False, False, False, 0, 0, False, False, False, False, 0, 0, True, True, False, False, 0, 0, False)
+
+If Not cut Is Nothing Then
+    WScript.Echo "Success:" & cut.Name
+Else
+    WScript.Echo "Fehler: Schnitt fehlgeschlagen."
+End If
+"""
+    res = _run_vbs_bridge(vbs)
+    if "Success" in res:
+        return f"Bohrung auf Achse {face_name} zentriert erstellt."
     return res
 
 
@@ -517,6 +604,53 @@ def sw_unsuppress_feature(name: str) -> str:
 
 
 @mcp.tool()
+def sw_chamfer_all_edges(distance_mm: float) -> str:
+    """Fügt an ALLEN Kanten des aktiven Bauteils eine Fase hinzu.
+    
+    Args:
+        distance_mm: Fasenabstand in mm.
+    """
+    vbs = f"""
+Set swApp = GetObject(, "SldWorks.Application.27")
+Set doc = swApp.ActiveDoc
+If doc Is Nothing Then WScript.Quit
+
+doc.ClearSelection2 True
+
+' Alle Kanten sammeln und selektieren
+Set part = doc
+vBodies = part.GetBodies2(0, True)
+If Not IsEmpty(vBodies) Then
+    For Each body In vBodies
+        vEdges = body.GetEdges
+        If Not IsEmpty(vEdges) Then
+            For Each edge In vEdges
+                edge.Select2 True, 1 ' Append=True, Mark=1
+            Next
+        End If
+    Next
+End If
+
+' Fase anwenden (InsertFeatureChamfer)
+' Typ 0=Winkel-Abstand
+' Parameter für SW 2019 (8 Stück): Type, Flip, Dist1, Angle, Dist2, UseD2, UseDist, Options?
+dist = {float(distance_mm)/1000.0}
+angle = 0.785398163 ' 45 Grad in Radiant
+Set feat = doc.FeatureManager.InsertFeatureChamfer(0, False, dist, angle, 0, False, False, 0)
+
+If Not feat Is Nothing Then
+    WScript.Echo "Success:" & feat.Name
+Else
+    WScript.Echo "Fehler: Fase konnte nicht erstellt werden. Evtl. ist der Wert zu groß."
+End If
+"""
+    res = _run_vbs_bridge(vbs)
+    if "Success" in res:
+        return f"Fase ({distance_mm}mm) an allen Kanten erfolgreich erstellt."
+    return res
+
+
+@mcp.tool()
 def sw_rename_feature(old_name: str, new_name: str) -> str:
     """Benennt ein Feature im Modellbaum um.
 
@@ -568,7 +702,14 @@ def sw_get_mass_properties() -> str:
     doc = active_doc()
     mass_prop = doc.Extension.CreateMassProperty
     mass_prop.UseSystemUnits = True
-    mass_prop.AddBodies(doc.GetBodies2(0, True))
+    
+    # GetBodies2 kann Property oder Methode sein
+    try:
+        bodies = doc.GetBodies2(0, True)
+    except:
+        bodies = doc.GetBodies2
+    
+    mass_prop.AddBodies(bodies)
     cx, cy, cz = mass_prop.CenterOfMass
     return (
         f"Masse:       {mass_prop.Mass * 1000:.4f} g\n"

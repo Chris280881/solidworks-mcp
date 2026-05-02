@@ -1,0 +1,17 @@
+Sub main()
+    Set swApp = CreateObject("SldWorks.Application.27")
+    Set doc = swApp.ActiveDoc
+    If Not doc Is Nothing Then
+        ' Versuche alle Skizzen zu schneiden, die noch kein Feature sind
+        ' Wir suchen nach Skizze8, 9, 10
+        Dim names
+        names = Array("Skizze8", "Skizze9", "Skizze10")
+        For i = 0 To 2
+            ok = doc.Extension.SelectByID2(names(i), "SKETCH", 0, 0, 0, False, 1, Nothing, 0)
+            If ok Then
+                ' FeatureCut3(Sd, Flip, Dir, T1, T2, D1, D2, Dchk1, Dchk2, Ddir1, Ddir2, D1r, D2r, D1a, D2a, D1h, D2h, D1o, D2o, SelOnSet, Topo, Tight, Np, Npdir, Npa, Npdist)
+                Set feat = doc.FeatureManager.FeatureCut3(True, False, False, 1, 0, 0.01, 0.01, False, False, False, False, 0, 0, False, False, False, False, 0, 0, True, True, False, False, 0, 0, False)
+            End If
+        Next
+    End If
+End Sub
