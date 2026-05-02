@@ -311,196 +311,123 @@ def sw_close() -> str:
 # ─── SCHNELL-MODELLIERUNG ───────────────────────────────────────────────────
 
 @mcp.tool()
-def sw_create_box(width_mm: float, depth_mm: float, height_mm: float, save_path: str) -> str:
-    """Erstellt ein neues Part mit einem Quader (Skizze auf Oben-Ebene + Extrusion).
+def sw_extrude(depth_mm: float, sketch_name: str = "Sketch1", flip: bool = False) -> str:
+    """Extrudiert eine Skizze zu einem Volumenkörper (Boss-Extrude)."""
+    doc = active_doc()
+    
+    # Sicherstellen, dass die Skizze selektiert ist (Mark 1 wird oft für Extrusion benötigt)
+    ok = doc.Extension.SelectByID2(sketch_name, "SKETCH", 0, 0, 0, False, 1, _NULL_DISPATCH, 0)
+    if not ok:
+        # Versuch ohne Typ-Angabe
+        ok = doc.Extension.SelectByID2(sketch_name, "", 0, 0, 0, False, 1, _NULL_DISPATCH, 0)
+    
+    if not ok:
+        return f"Fehler: Skizze '{sketch_name}' konnte nicht selektiert werden."
+    
+    h = float(depth_mm) / 1000.0
+    try:
+        # Empirisch ermittelt für dieses System: FeatureExtrusion mit 20 Parametern
+        # Wir füllen mit Standardwerten auf
+        feat = doc.FeatureManager.FeatureExtrusion(
+            True, flip, False, 
+            0, 0, h, 0.0,
+            False, False, False, False, 0.0, 0.0,
+            False, False, False, False, True,
+            False, False # Die letzten beiden Parameter (oft Tight und Poly)
+        )
+    except Exception as e:
+        return f"Fehler bei Extrusion (Exception): {str(e)}"
+
+    if feat is None:
+        # Letzter Versuch: FeatureExtrusion2 mit 23 Parametern (falls 20 nur zufällig kein Argument-Fehler war)
+        try:
+            feat = doc.FeatureManager.FeatureExtrusion2(
+                True, flip, False, 0, 0, h, 0.0,
+                False, False, False, False, 0.0, 0.0,
+                False, False, False, False, 0.0, 0.0,
+                True, True, False, False
+            )
+        except Exception:
+            pass
+
+    if feat is None:
+        return "Fehler: Extrusion fehlgeschlagen (FeatureManager gab None zurück). Prüfe ob die Skizze geschlossen und gültig ist."
+    
+    doc.EditRebuild3()
+    return f"Extrusion '{feat.Name}' erstellt: {depth_mm} mm"
+
+
+@mcp.tool()
+def sw_select_feature(name: str, append: bool = False, mark: int = 0) -> str:
+    """Selektiert ein Feature im Modellbaum anhand seines Namens.
 
     Args:
-        width_mm:  Breite in X-Richtung (mm)
-        depth_mm:  Tiefe in Z-Richtung (mm)
-        height_mm: Höhe = Extrusionstiefe in Y-Richtung (mm)
-        save_path: Speicherpfad .sldprt
+        name:   Name des Features
+        append: Zu bestehender Auswahl hinzufügen (True) oder Auswahl ersetzen (False)
+        mark:   Selektions-Markierung (oft 0 oder 1 für Features)
     """
+    doc = active_doc()
+    feat = _find_feature(doc, name)
+    if feat is None:
+        return f"Feature '{name}' nicht gefunden."
+    ok = feat.Select2(append, mark)
+    return f"'{name}' selektiert." if ok else f"Fehler beim Selektieren von '{name}'."
+
+
+@mcp.tool()
+def sw_create_box(width_mm: float, depth_mm: float, height_mm: float, save_path: str) -> str:
+    """Erstellt ein neues Part mit einem Quader (Skizze auf Oben-Ebene + Extrusion)."""
     sw = get_sw()
     template = sw.GetUserPreferenceStringValue(9)
     doc = sw.NewDocument(template, 0, 0, 0)
-    if doc is None:
-        return "Fehler: Part konnte nicht erstellt werden."
-
-    # COM-Referenz nach NewDocument erneuern — zurückgegebenes Objekt kann veraltet sein
+    if doc is None: return "Fehler: Part-Erstellung fehlgeschlagen."
+    
     doc = sw.ActiveDoc
-    if doc is None:
-        return "Fehler: Dokument nach Erstellung nicht aktiv."
+    if not _select_plane(doc, "top"): return "Fehler: Oben-Ebene nicht gefunden."
 
-    if not _select_plane(doc, "top"):
-        return "Fehler: Oben-Ebene nicht gefunden."
-
+    # Skizze öffnen
     doc.SketchManager.InsertSketch(True)
-
-    w2 = float(width_mm) / 2000.0
-    d2 = float(depth_mm) / 2000.0
-    doc.SketchManager.CreateCornerRectangle(-w2, -d2, 0.0, w2, d2, 0.0)
-
-    doc.SketchManager.InsertSketch(True)
-
-    doc.Extension.SelectByID2("Sketch1", "SKETCH", 0.0, 0.0, 0.0, False, 0, _NULL_DISPATCH, 0)
+    w2, d2 = float(width_mm)/2000.0, float(depth_mm)/2000.0
+    doc.SketchManager.CreateCornerRectangle(-w2, -d2, 0, w2, d2, 0)
+    
+    # EXTRUSION SOFORT (während Skizze noch aktiv ist)
+    # Wir probieren die 21-Parameter-Variante (SW 2019 Standard)
     h = float(height_mm) / 1000.0
     feat = None
     try:
-        feat = doc.FeatureManager.FeatureExtrusion3(
-            True, False, False,
-            0, 0,
-            h, 0.0,
-            False, False,
-            0.0, 0.0,
-            False, False,
-            False, False,
-            False, False,
-            0.0, 0.0,
-            True, True, True,
-            0, 0.0, False
+        feat = doc.FeatureManager.FeatureExtrusion2(
+            True, False, False, 
+            0, 0, h, 0.0,
+            False, False, False, False, 0.0, 0.0,
+            False, False, False, False, 0.0, 0.0,
+            True, True
         )
     except Exception:
-        feat = doc.FeatureManager.FeatureExtrusion2(
-            True, False, False,
-            0, 0,
-            h, 0.0,
-            False, False,
-            0.0, 0.0,
-            False, False,
-            False, False,
-            False, False,
-            0.0, 0.0,
-            True, True, True
-        )
-    if feat is None:
-        return "Fehler: Extrusion fehlgeschlagen."
+        # Fallback auf 23 Parameter
+        try:
+            feat = doc.FeatureManager.FeatureExtrusion2(
+                True, False, False, 
+                0, 0, h, 0.0,
+                False, False, False, False, 0.0, 0.0,
+                False, False, False, False, 0.0, 0.0,
+                True, True, False, False
+            )
+        except Exception:
+            pass
 
-    doc.EditRebuild3
+    if feat is None:
+        # Letzter Versuch: Skizze schließen und dann extrudieren
+        doc.SketchManager.InsertSketch(True)
+        # Name ermitteln (letztes Feature)
+        sketch_name = "Skizze1"
+        try:
+            sketch_name = doc.GetActiveSketch2.GetFeature.Name
+        except:
+            pass
+        return sw_extrude(height_mm, sketch_name)
+    
+    doc.EditRebuild3()
     return _save_doc(doc, save_path)
-
-
-# ─── SKETCH-TOOLS ───────────────────────────────────────────────────────────
-
-@mcp.tool()
-def sw_create_sketch(plane: str = "top") -> str:
-    """Öffnet eine neue Skizze auf der angegebenen Referenzebene.
-
-    Args:
-        plane: "top" (Oben), "front" (Vorne), "right" (Rechts)
-    """
-    doc = active_doc()
-    if not _select_plane(doc, plane):
-        return f"Fehler: Ebene '{plane}' nicht gefunden."
-    doc.SketchManager.InsertSketch(True)
-    return f"Skizze auf '{plane}'-Ebene geöffnet."
-
-
-@mcp.tool()
-def sw_sketch_rectangle(x1_mm: float, y1_mm: float, x2_mm: float, y2_mm: float) -> str:
-    """Zeichnet ein Rechteck in der aktiven Skizze (Eckpunkte in mm).
-
-    Args:
-        x1_mm, y1_mm: Erste Ecke in mm
-        x2_mm, y2_mm: Gegenüberliegende Ecke in mm
-    """
-    doc = active_doc()
-    segs = doc.SketchManager.CreateCornerRectangle(
-        x1_mm / 1000.0, y1_mm / 1000.0, 0,
-        x2_mm / 1000.0, y2_mm / 1000.0, 0
-    )
-    if segs is None:
-        return "Fehler: Rechteck konnte nicht gezeichnet werden."
-    return f"Rechteck: ({x1_mm},{y1_mm}) → ({x2_mm},{y2_mm}) mm"
-
-
-@mcp.tool()
-def sw_sketch_circle(cx_mm: float, cy_mm: float, radius_mm: float) -> str:
-    """Zeichnet einen Kreis in der aktiven Skizze.
-
-    Args:
-        cx_mm, cy_mm: Mittelpunkt in mm
-        radius_mm: Radius in mm
-    """
-    doc = active_doc()
-    seg = doc.SketchManager.CreateCircle(
-        cx_mm / 1000.0, cy_mm / 1000.0, 0,
-        (cx_mm + radius_mm) / 1000.0, cy_mm / 1000.0, 0
-    )
-    if seg is None:
-        return "Fehler: Kreis konnte nicht gezeichnet werden."
-    return f"Kreis: Mittelpunkt ({cx_mm},{cy_mm}) mm, r={radius_mm} mm"
-
-
-@mcp.tool()
-def sw_sketch_line(x1_mm: float, y1_mm: float, x2_mm: float, y2_mm: float) -> str:
-    """Zeichnet eine Linie in der aktiven Skizze.
-
-    Args:
-        x1_mm, y1_mm: Startpunkt in mm
-        x2_mm, y2_mm: Endpunkt in mm
-    """
-    doc = active_doc()
-    seg = doc.SketchManager.CreateLine(
-        x1_mm / 1000.0, y1_mm / 1000.0, 0,
-        x2_mm / 1000.0, y2_mm / 1000.0, 0
-    )
-    if seg is None:
-        return "Fehler: Linie konnte nicht gezeichnet werden."
-    return f"Linie: ({x1_mm},{y1_mm}) → ({x2_mm},{y2_mm}) mm"
-
-
-@mcp.tool()
-def sw_close_sketch() -> str:
-    """Schließt die aktive Skizze."""
-    active_doc().SketchManager.InsertSketch(True)
-    return "Skizze geschlossen."
-
-
-# ─── FEATURES ───────────────────────────────────────────────────────────────
-
-@mcp.tool()
-def sw_extrude(depth_mm: float, sketch_name: str = "Sketch1", flip: bool = False) -> str:
-    """Extrudiert eine Skizze zu einem Volumenkörper (Boss-Extrude).
-
-    Args:
-        depth_mm:    Extrusionstiefe in mm
-        sketch_name: Name der Skizze (Standard: Sketch1)
-        flip:        Extrusionsrichtung umkehren
-    """
-    doc = active_doc()
-    doc.Extension.SelectByID2(sketch_name, "SKETCH", 0.0, 0.0, 0.0, False, 0, _NULL_DISPATCH, 0)
-    feat = None
-    try:
-        feat = doc.FeatureManager.FeatureExtrusion3(
-            True, flip, False,
-            0, 0,
-            float(depth_mm) / 1000.0, 0.0,
-            False, False,
-            0.0, 0.0,
-            False, False,
-            False, False,
-            False, False,
-            0.0, 0.0,
-            True, True, True,
-            0, 0.0, False
-        )
-    except Exception:
-        feat = doc.FeatureManager.FeatureExtrusion2(
-            True, flip, False,
-            0, 0,
-            float(depth_mm) / 1000.0, 0.0,
-            False, False,
-            0.0, 0.0,
-            False, False,
-            False, False,
-            False, False,
-            0.0, 0.0,
-            True, True, True
-        )
-    if feat is None:
-        return "Fehler: Extrusion fehlgeschlagen."
-    doc.EditRebuild3
-    return f"Extrusion '{feat.Name}': {depth_mm} mm"
 
 
 @mcp.tool()
