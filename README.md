@@ -8,10 +8,18 @@ Dieser Server ermöglicht es KI-Assistenten (wie Claude oder Gemini), SolidWorks
 
 - **Status & Navigation**: Verbindung prüfen, geöffnete Dokumente listen und aktivieren.
 - **Dateimanagement**: Neue Parts erstellen, Dateien öffnen, speichern und schließen.
-- **Modellierung**: Erstellen von Quader-Primitiven, Skizzen (Linien, Kreise, Rechtecke) und Features (Extrusion, Schnitt, Verrundung, Fase).
-- **Daten & Eigenschaften**: Auslesen von Masseneigenschaften (Masse, Volumen, Schwerpunkt), Bemaßungen und benutzerdefinierten Eigenschaften.
-- **Export**: Export in Formate wie STL, STEP, IGES, DXF, DWG und PDF.
-- **Zeichnungen**: Automatisierte Erstellung von Zeichnungen mit Standardansichten.
+- **Modellierung**: Erstellen von Quader-Primitiven, Skizzen und Features. Optimiert für SolidWorks 2019 (Signatur-Fixes für 20/23 Parameter).
+- **Lokalisierung**: Unterstützt deutsche ("Ebene oben") und englische ("Top Plane") Bezeichnungen.
+- **Daten & Eigenschaften**: Auslesen von Masseneigenschaften, Bemaßungen und benutzerdefinierten Eigenschaften.
+- **Export**: Export in STL, STEP, IGES, DXF, DWG und PDF.
+- **Neu**: `sw_select_feature` zur expliziten Steuerung von Selektionen.
+
+## Bekannte Besonderheiten (SW 2019)
+
+Die COM-Schnittstelle von SolidWorks 2019 erfordert exakte Parameteranzahlen:
+- `FeatureExtrusion`: 20 Parameter
+- `FeatureExtrusion2`: 23 Parameter
+Der Server enthält automatische Fallbacks, um diese Stabilität zu gewährleisten.
 
 ## Voraussetzungen
 

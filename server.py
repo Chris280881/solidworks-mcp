@@ -5,6 +5,7 @@ Transports:
 """
 
 import sys
+import os
 import pythoncom
 import win32com.client
 from mcp.server.fastmcp import FastMCP
@@ -310,124 +311,85 @@ def sw_close() -> str:
 
 # ─── SCHNELL-MODELLIERUNG ───────────────────────────────────────────────────
 
-@mcp.tool()
-def sw_extrude(depth_mm: float, sketch_name: str = "Sketch1", flip: bool = False) -> str:
-    """Extrudiert eine Skizze zu einem Volumenkörper (Boss-Extrude)."""
-    doc = active_doc()
+def _get_part_template(sw):
+    """Sucht nach einem gültigen Part-Template (.prtdot)."""
+    # 1. Standard-Einstellung prüfen
+    template = sw.GetUserPreferenceStringValue(9) # swDefaultTemplatePart
+    if template and template.lower().endswith(".prtdot"):
+        return template
     
-    # Sicherstellen, dass die Skizze selektiert ist (Mark 1 wird oft für Extrusion benötigt)
-    ok = doc.Extension.SelectByID2(sketch_name, "SKETCH", 0, 0, 0, False, 1, _NULL_DISPATCH, 0)
-    if not ok:
-        # Versuch ohne Typ-Angabe
-        ok = doc.Extension.SelectByID2(sketch_name, "", 0, 0, 0, False, 1, _NULL_DISPATCH, 0)
+    # 2. Bekannte Pfade scannen
+    paths = [
+        r"C:\ProgramData\SolidWorks\SOLIDWORKS 2019\templates",
+        r"C:\ProgramData\SOLIDWORKS Corp\SOLIDWORKS\templates"
+    ]
+    for p in paths:
+        if os.path.exists(p):
+            for f in os.listdir(p):
+                if f.lower().endswith(".prtdot"):
+                    return os.path.join(p, f)
     
-    if not ok:
-        return f"Fehler: Skizze '{sketch_name}' konnte nicht selektiert werden."
+    # 3. Fallback: Leerer String (SW fragt evtl. nach)
+    return template
+
+
+def _run_vbs_bridge(script_content: str) -> str:
+    """Schreibt und führt ein VBScript aus, um COM-Probleme zu umgehen."""
+    import tempfile
+    import subprocess
+    temp_dir = tempfile.gettempdir()
+    vbs_path = os.path.join(temp_dir, "sw_bridge.vbs")
+    with open(vbs_path, "w", encoding="latin-1") as f:
+        f.write(script_content)
     
-    h = float(depth_mm) / 1000.0
     try:
-        # Empirisch ermittelt für dieses System: FeatureExtrusion mit 20 Parametern
-        # Wir füllen mit Standardwerten auf
-        feat = doc.FeatureManager.FeatureExtrusion(
-            True, flip, False, 
-            0, 0, h, 0.0,
-            False, False, False, False, 0.0, 0.0,
-            False, False, False, False, True,
-            False, False # Die letzten beiden Parameter (oft Tight und Poly)
-        )
+        result = subprocess.run(["cscript", "//NoLogo", vbs_path], 
+                               capture_output=True, text=True, timeout=10)
+        return result.stdout.strip()
     except Exception as e:
-        return f"Fehler bei Extrusion (Exception): {str(e)}"
-
-    if feat is None:
-        # Letzter Versuch: FeatureExtrusion2 mit 23 Parametern (falls 20 nur zufällig kein Argument-Fehler war)
-        try:
-            feat = doc.FeatureManager.FeatureExtrusion2(
-                True, flip, False, 0, 0, h, 0.0,
-                False, False, False, False, 0.0, 0.0,
-                False, False, False, False, 0.0, 0.0,
-                True, True, False, False
-            )
-        except Exception:
-            pass
-
-    if feat is None:
-        return "Fehler: Extrusion fehlgeschlagen (FeatureManager gab None zurück). Prüfe ob die Skizze geschlossen und gültig ist."
-    
-    doc.EditRebuild3()
-    return f"Extrusion '{feat.Name}' erstellt: {depth_mm} mm"
-
-
-@mcp.tool()
-def sw_select_feature(name: str, append: bool = False, mark: int = 0) -> str:
-    """Selektiert ein Feature im Modellbaum anhand seines Namens.
-
-    Args:
-        name:   Name des Features
-        append: Zu bestehender Auswahl hinzufügen (True) oder Auswahl ersetzen (False)
-        mark:   Selektions-Markierung (oft 0 oder 1 für Features)
-    """
-    doc = active_doc()
-    feat = _find_feature(doc, name)
-    if feat is None:
-        return f"Feature '{name}' nicht gefunden."
-    ok = feat.Select2(append, mark)
-    return f"'{name}' selektiert." if ok else f"Fehler beim Selektieren von '{name}'."
+        return f"Fehler: {str(e)}"
 
 
 @mcp.tool()
 def sw_create_box(width_mm: float, depth_mm: float, height_mm: float, save_path: str) -> str:
-    """Erstellt ein neues Part mit einem Quader (Skizze auf Oben-Ebene + Extrusion)."""
+    """Erstellt einen Quader (50x50x50 mm) vollautomatisch via Macro-Bridge."""
     sw = get_sw()
-    template = sw.GetUserPreferenceStringValue(9)
-    doc = sw.NewDocument(template, 0, 0, 0)
-    if doc is None: return "Fehler: Part-Erstellung fehlgeschlagen."
+    template = _get_part_template(sw)
     
-    doc = sw.ActiveDoc
-    if not _select_plane(doc, "top"): return "Fehler: Oben-Ebene nicht gefunden."
+    # VBScript für die gesamte Operation
+    vbs = f"""
+Set swApp = GetObject(, "SldWorks.Application.27")
+template = "{template.replace('\\', '\\\\')}"
+Set doc = swApp.NewDocument(template, 0, 0, 0)
+If doc Is Nothing Then
+    WScript.Echo "Fehler: Template konnte nicht geladen werden."
+    WScript.Quit
+End If
 
-    # Skizze öffnen
-    doc.SketchManager.InsertSketch(True)
-    w2, d2 = float(width_mm)/2000.0, float(depth_mm)/2000.0
-    doc.SketchManager.CreateCornerRectangle(-w2, -d2, 0, w2, d2, 0)
-    
-    # EXTRUSION SOFORT (während Skizze noch aktiv ist)
-    # Wir probieren die 21-Parameter-Variante (SW 2019 Standard)
-    h = float(height_mm) / 1000.0
-    feat = None
-    try:
-        feat = doc.FeatureManager.FeatureExtrusion2(
-            True, False, False, 
-            0, 0, h, 0.0,
-            False, False, False, False, 0.0, 0.0,
-            False, False, False, False, 0.0, 0.0,
-            True, True
-        )
-    except Exception:
-        # Fallback auf 23 Parameter
-        try:
-            feat = doc.FeatureManager.FeatureExtrusion2(
-                True, False, False, 
-                0, 0, h, 0.0,
-                False, False, False, False, 0.0, 0.0,
-                False, False, False, False, 0.0, 0.0,
-                True, True, False, False
-            )
-        except Exception:
-            pass
+' Ebene Oben selektieren
+ok = doc.Extension.SelectByID2("Ebene oben", "PLANE", 0, 0, 0, False, 0, Nothing, 0)
+If Not ok Then ok = doc.Extension.SelectByID2("Top Plane", "PLANE", 0, 0, 0, False, 0, Nothing, 0)
 
-    if feat is None:
-        # Letzter Versuch: Skizze schließen und dann extrudieren
-        doc.SketchManager.InsertSketch(True)
-        # Name ermitteln (letztes Feature)
-        sketch_name = "Skizze1"
-        try:
-            sketch_name = doc.GetActiveSketch2.GetFeature.Name
-        except:
-            pass
-        return sw_extrude(height_mm, sketch_name)
-    
-    doc.EditRebuild3()
-    return _save_doc(doc, save_path)
+doc.SketchManager.InsertSketch True
+w2 = {float(width_mm)/2000.0}
+d2 = {float(depth_mm)/2000.0}
+doc.SketchManager.CreateCornerRectangle -w2, -d2, 0, w2, d2, 0
+
+' Extrusion während Skizze aktiv ist
+h = {float(height_mm)/1000.0}
+Set feat = doc.FeatureManager.FeatureExtrusion2(True, False, False, 0, 0, h, 0, False, False, False, False, 0, 0, False, False, False, False, 0, 0, True, True, False, False)
+
+If Not feat Is Nothing Then
+    doc.SaveAs "{save_path.replace('\\', '\\\\')}"
+    WScript.Echo "Success:" & feat.Name
+Else
+    WScript.Echo "Fehler: Extrusion fehlgeschlagen."
+End If
+"""
+    res = _run_vbs_bridge(vbs)
+    if "Success" in res:
+        return f"Quader erfolgreich erstellt und gespeichert: {save_path}"
+    return res
 
 
 @mcp.tool()
